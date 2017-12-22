@@ -1,0 +1,194 @@
+#!/usr/bin/env python
+
+import logging
+import jsonpickle
+import io
+from sys import argv
+
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from PyQt5.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot, QVariant
+from PyQt5.QtGui import QGuiApplication
+from PyQt5.QtQml import QQmlListProperty, QQmlApplicationEngine, qmlRegisterType
+
+_LOGGER = logging.getLogger(__name__)
+_STORE = None
+_DEFAULT_LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+
+def _save_config():
+    if not _STORE:
+        return
+
+    channels = _STORE.raw_channels()
+    config_file = io.open('conf.json', 'wb', encoding='utf8')
+
+    if len(channels) == 0 and config_file:
+        _LOGGER.info('Channels empty, just erase channel config')
+        return
+
+    if not config_file:
+        _LOGGER.error('Can not open config file')
+        return
+
+    data = []
+    for channel in channels:
+        data.append(channel.to_config())
+
+    json_conf = jsonpickle.encode(data, unpicklable=False)
+
+    _LOGGER.info('JSON: {}'.format(json_conf))
+    config_file.write(json_conf.encode())
+
+
+def _load_config():
+    if not _STORE:
+        return
+
+    try:
+        buffer = io.open('conf.json', encoding='utf8')
+        channels = jsonpickle.decode(buffer.read())
+        for ch in channels:
+            _STORE.append_channel(Channel.from_config(ch))
+    except Exception as e:
+        _LOGGER.error('Error load config {}'.format(e))
+        return
+
+
+def _configure_logging():
+    _LOGGER.setLevel(logging.DEBUG)
+
+    ch = logging.StreamHandler()
+
+    formatter = logging.Formatter(_DEFAULT_LOG_FORMAT)
+    ch.setFormatter(formatter)
+
+    _LOGGER.addHandler(ch)
+
+
+class Handler(FileSystemEventHandler):
+
+    @staticmethod
+    def on_any_event(event):
+
+        if event.is_directory:
+            return None
+
+        # elif event.event_type == 'created':
+        #     # Take any action here when a file is first created.
+        #     print "Received created event - %s." % event.src_path
+        #
+        # elif event.event_type == 'modified':
+        #     # Taken any action here when a file is modified.
+        #     print "Received modified event - %s." % event.src_path
+
+        elif event.event_type == 'moved':
+            # combined = "(" + ")|(".join(_ACCEPT) + ")"
+            # filename = None
+            # if re.match(combined, event.dest_path):
+            #     filename = event.dest_path
+            # elif re.match(combined, event.src_path):
+            #     filename = event.src_path
+
+            # if filename:
+            #     _LOGGER.info('Detected file %s - %s - %s' % (filename, event.dest_path, event.src_path))
+            for channel in _STORE.raw_channels():
+                if channel.is_accept_file(event.dest_path):
+                    channel.sync(event.dest_path)
+                elif channel.is_accept_file(event.src_path):
+                    channel.sync(event.src_path)
+
+
+class Watcher(QObject):
+    path = None
+    running = False
+
+    def __init__(self, path='', *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.observer = Observer()
+        self.path = path
+
+    def run(self):
+        if self.path:
+            self.running = True
+            event_handler = Handler()
+            self.observer.schedule(event_handler, self.path, recursive=True)
+            self.observer.start()
+        else:
+            _LOGGER.info('Error no path set')
+
+    def stop(self):
+        self.running = False
+        self.observer.stop()
+
+
+
+
+class Store(QObject):
+
+    channelsChanged = pyqtSignal()
+    countChanged = pyqtSignal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._channels = []
+
+    @pyqtProperty(int, notify=countChanged)
+    def count(self):
+        return len(self._channels)
+
+    @pyqtProperty(QQmlListProperty, notify=channelsChanged)
+    def channels(self):
+        return QQmlListProperty(Channel, self, self._channels)
+
+    def raw_channels(self):
+        return self._channels
+
+    @channels.setter
+    def channels(self, channels):
+        if channels != self._channels:
+            self._channels = channels
+            self.channelsChanged.emit()
+
+    @pyqtSlot(QVariant)
+    def create_channel(self, options):
+
+        _LOGGER.info('Create channel {}'.format(options.toVariant()))
+        opt = options.toVariant()
+        self.append_channel(
+            Channel(**opt)
+        )
+
+    def append_channel(self, channel):
+        self._channels.append(channel)
+        self.channelsChanged.emit()
+        self.countChanged.emit()
+
+        _save_config()
+
+    @pyqtSlot(str)
+    def start_channel(self, index):
+        channel = self._channels[index]
+        channel.start()
+
+
+def main():
+    app = QGuiApplication(argv)
+
+    qmlRegisterType(Channel, 'Example', 1, 0, 'Channel')
+    qmlRegisterType(Store, 'Example', 1, 0, 'Store')
+    qmlRegisterType(Watcher, 'Example', 1, 0, 'Watcher')
+
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty('store', _STORE)
+    engine.load('main.qml')
+
+    exit(app.exec_())
+
+
+if __name__ == '__main__':
+    _configure_logging()
+    _STORE = Store()
+    _load_config()
+    main()

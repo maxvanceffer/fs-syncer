@@ -1,0 +1,24 @@
+name: fs-syncer
+version: 0.0.1
+summary: File system watcher and sync them with remoute machines.
+description: |
+  youtube-dl is a small command-line program to download videos from
+  YouTube.com and a few more sites.
+
+grade: devel
+confinement: devmode
+
+parts:
+  lib:
+    source: ./src
+    plugin: python
+    python-version: python3
+    stage-packages: [qml-module-qtquick2, qml-module-qtquick-localstorage, python3-watchdog, curl, paramiko]
+  app:
+    plugin: dump
+    source: ./src/qml
+
+apps:
+  fs-syncer:
+    command: bin/syncer
+    plugs: [network]
